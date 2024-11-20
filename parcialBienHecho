@@ -1,0 +1,131 @@
+PARCIAL BIEN HECHO
+
+
+SQL
+
+SELECT
+  ROW_NUMBER() OVER(
+    ORDER BY
+      MAX(item_cantidad) DESC
+  ) AS 'Numero de fila',
+  c.clie_codigo AS 'Código de cliente',
+  (
+    SELECT
+      TOP 1 _p.prod_detalle
+    FROM
+      Producto as _p
+      INNER JOIN Item_Factura as _if2 ON _if2.item_producto = _p.prod_codigo
+      INNER JOIN Factura as _f ON _f.fact_tipo = _if2.item_tipo
+      AND _f.fact_numero = _if2.item_numero
+      AND _f.fact_sucursal = _if2.item_sucursal
+    WHERE
+      _f.fact_cliente = c.clie_codigo --c.clie_codigo
+    GROUP BY
+      _p.prod_codigo,
+      _p.prod_detalle
+    ORDER BY
+      SUM(_if2.item_cantidad) DESC
+  ) AS 'El nombre del producto más comprado por el cliente',
+  SUM(
+    IIF(
+      DATEDIFF(MONTH, f.fact_fecha, GETDATE()) <= 12,
+      item_cantidad,
+      0
+    )
+  ) AS 'La cantidad total comprada por el cliente en el último año'
+FROM
+  Cliente AS c
+  INNER JOIN Factura AS f ON f.fact_cliente = c.clie_codigo
+  AND (YEAR(f.fact_fecha) % 2 = 0)
+  INNER JOIN Item_Factura as if2 ON f.fact_tipo = if2.item_tipo
+  AND f.fact_numero = if2.item_numero
+  AND f.fact_sucursal = if2.item_sucursal
+WHERE
+  c.clie_codigo NOT IN (
+    SELECT
+      _c.clie_codigo
+    FROM
+      Cliente AS _c
+      INNER JOIN Factura AS _f ON _f.fact_cliente = _c.clie_codigo
+      AND (YEAR(_f.fact_fecha) % 2 != 0)
+  )
+GROUP BY
+  c.clie_codigo
+ORDER BY
+  MAX(if2.item_cantidad) DESC;
+
+TSQL
+
+
+
+CREATE TRIGGER trg_Cliente_Auditoria
+ON Cliente
+INSTEAD OF INSERT, UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Detectar si la operación es masiva
+    IF (SELECT COUNT(*) FROM inserted) > 1 OR (SELECT COUNT(*) FROM deleted) > 1
+    BEGIN
+        INSERT INTO Cliente_Auditoria (operacion, valores_afectados, fecha_hora)
+        VALUES (
+            'Operacion MASIVA',
+            'Se intentó realizar una operación masiva en la tabla Cliente.',
+            GETDATE()
+        );
+        RETURN;
+    END
+
+    -- Operaciones individuales: INSERT
+    IF EXISTS (SELECT 1 FROM inserted) AND NOT EXISTS (SELECT 1 FROM deleted)
+    BEGIN
+        INSERT INTO Cliente (clie_codigo, clie_nombre, clie_direccion)
+        SELECT clie_codigo, clie_nombre, clie_direccion FROM inserted;
+
+        INSERT INTO Cliente_Auditoria (cliente_id, operacion, valores_afectados, fecha_hora)
+        SELECT
+            i.clie_codigo,
+            'INSERT',
+            CONCAT('Nuevo cliente: ', 'Nombre=', i.clie_nombre, ', Direccion=', i.clie_direccion),
+            GETDATE()
+        FROM inserted i;
+    END
+
+    -- Operaciones individuales: UPDATE
+    IF EXISTS (SELECT 1 FROM inserted) AND EXISTS (SELECT 1 FROM deleted)
+    BEGIN
+        UPDATE Cliente
+        SET clie_nombre = i.clie_nombre,
+            clie_direccion = i.clie_direccion
+        FROM Cliente c
+        JOIN inserted i ON c.clie_codigo = i.clie_codigo;
+
+        INSERT INTO Cliente_Auditoria (cliente_id, operacion, valores_afectados, fecha_hora)
+        SELECT
+            i.clie_codigo,
+            'UPDATE',
+            CONCAT(
+                'Antes: ', 'Nombre=', d.clie_nombre, ', Direccion=', d.clie_direccion,
+                ' | Ahora: ', 'Nombre=', i.clie_nombre, ', Direccion=', i.clie_direccion
+            ),
+            GETDATE()
+        FROM inserted i
+        JOIN deleted d ON i.clie_codigo = d.clie_codigo;
+    END
+
+    -- Operaciones individuales: DELETE
+    IF EXISTS (SELECT 1 FROM deleted) AND NOT EXISTS (SELECT 1 FROM inserted)
+    BEGIN
+        DELETE FROM Cliente
+        WHERE clie_codigo IN (SELECT clie_codigo FROM deleted);
+
+        INSERT INTO Cliente_Auditoria (cliente_id, operacion, valores_afectados, fecha_hora)
+        SELECT
+            d.clie_codigo,
+            'DELETE',
+            CONCAT('Cliente eliminado: ', 'Nombre=', d.clie_nombre, ', Direccion=', d.clie_direccion),
+            GETDATE()
+        FROM deleted d;
+    END
+END;
